@@ -1074,6 +1074,12 @@ impl Program {
         self.opts.config
     }
 
+    /// tsrs-only: the regions the file loader allocated in (`ProgramOptions::regions`), shared by the versions
+    /// `update_program` makes from this one.
+    pub fn loader_regions(&self) -> Option<Arc<crate::programregions::ProgramRegions>> {
+        self.opts.regions.clone()
+    }
+
     // program.go:538
     pub fn host(&self) -> &Arc<dyn CompilerHost> {
         &self.host

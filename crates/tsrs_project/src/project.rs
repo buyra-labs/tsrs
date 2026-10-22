@@ -3,8 +3,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use tsrs_ast::Diagnostic;
 use tsrs_compiler::{
-    CheckerPool, CreateCheckerPool, CreateModuleResolver, Program, ProgramOptions, new_program,
-    sort_and_deduplicate_diagnostics,
+    CheckerPool, CreateCheckerPool, CreateModuleResolver, Program, ProgramOptions, ProgramRegions,
+    new_program, sort_and_deduplicate_diagnostics,
 };
 use tsrs_core::collections::{Set, SyncMap};
 use tsrs_core::context::Context;
@@ -682,6 +682,10 @@ impl Project {
             opts.typings_location = typings_location;
             opts.create_checker_pool = Some(create_checker_pool);
             opts.create_module_resolver = Some(create_module_resolver);
+            // The loader's worker threads allocate in regions of their own (they cannot enter `region`, which this
+            // thread holds), freed with the build's base region below. Without them, what a worker allocated (module
+            // resolutions) went to its thread arena and was never freed.
+            opts.regions = Some(Arc::new(ProgramRegions::default()));
             new_program_result = new_program(opts);
         }
         let cleanup = cleanup_module_resolver.lock().unwrap().take();
@@ -712,6 +716,14 @@ impl Project {
         ));
         if let Some(pool) = &checker_pool {
             pool.set_owner(Arc::downgrade(&owner));
+        }
+        if !program_cloned {
+            // The loader's regions hold the processed-file and resolution data that every version cloned from this
+            // build shares, so they live as long as `base`, and are freed after that data (`programOwner::new`
+            // registered its `on_free` first).
+            if let Some(regions) = new_program_result.loader_regions() {
+                owner.base.on_free(Box::new(move || drop(regions)));
+            }
         }
         CreateProgramResult { program: new_program_result, update_kind, checker_pool, owner }
     }
