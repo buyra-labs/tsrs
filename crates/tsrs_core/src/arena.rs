@@ -673,8 +673,10 @@ fn slab_release_ex(slab: *const Slab, retire: bool) {
 /// 0 unknown, 1 normal, 2 poison (`TSRS_ARENA_POISON=1`): freed and rewound memory is filled and never reused.
 static MODE: AtomicU8 = AtomicU8::new(0);
 
+/// Whether poison mode is on: freed memory is filled and never reused (also by tables outside the arena that reuse
+/// slots of freed objects, so stale uses stay detectable).
 #[inline]
-pub(crate) fn poison_mode() -> bool {
+pub fn poison_mode() -> bool {
     match MODE.load(Ordering::Relaxed) {
         0 => {
             let on = std::env::var_os("TSRS_ARENA_POISON").is_some_and(|v| v == "1");

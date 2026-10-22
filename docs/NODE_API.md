@@ -493,5 +493,5 @@ real files and symlinks. No Cargo feature is needed. Fixtures and their generato
   `crates/tsrs_cli/src/api.rs`; ~19 MiB per rebuild before). File texts parsed inside a freeable region are
   copied into it and unregistered with it instead of leaked. Still retained: the request thread's arena use
   outside these paths. Unregistered
-  source texts free their memory but not their registry slot; slots are never reused, so a very long-lived
-  session that parses more than 2^20 files in freeable regions falls back to the slower text lookup path.
+  source texts free their memory and their registry slot, which the next parsed file reuses (except in
+  poison mode), so only 2^20 texts registered at once make files fall back to the slower text lookup path.

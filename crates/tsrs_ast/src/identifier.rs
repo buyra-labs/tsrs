@@ -13,7 +13,7 @@
 // range end of a compact identifier is fixed when it is created: `Node::set_loc` panics if it would change.
 
 use std::collections::hash_map::Entry;
-use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicUsize, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering::Relaxed};
 use std::sync::{LazyLock, Mutex};
 
 use rustc_hash::FxHashMap;
@@ -41,14 +41,29 @@ static SOURCE_TEXTS: [SourceTextSlot; SOURCE_TEXTS_CAP] = [const {
     SourceTextSlot { ptr: AtomicPtr::new(std::ptr::null_mut()), len: AtomicUsize::new(0) }
 }; SOURCE_TEXTS_CAP];
 static SOURCE_TEXT_COUNT: AtomicU32 = AtomicU32::new(0);
+/// Indices of unregistered texts, taken by `register_source_text` before new ones; the mutex orders a slot's clearing
+/// before its next registration.
+static FREE_SOURCE_TEXTS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+/// Set once an index was freed: until then (the CLI) registering takes no lock.
+static ANY_FREE_SOURCE_TEXT: AtomicBool = AtomicBool::new(false);
 
 /// Registers a file's text for compact identifiers; `NO_SOURCE_TEXT` once the table is full (identifiers of later
 /// files then store their text).
 pub fn register_source_text(text: &'static str) -> u32 {
-    let Ok(index) = SOURCE_TEXT_COUNT
-        .try_update(Relaxed, Relaxed, |n| ((n as usize) < SOURCE_TEXTS_CAP).then(|| n + 1))
-    else {
-        return NO_SOURCE_TEXT;
+    let reused = if ANY_FREE_SOURCE_TEXT.load(Relaxed) {
+        FREE_SOURCE_TEXTS.lock().unwrap().pop()
+    } else {
+        None
+    };
+    let index = if let Some(index) = reused {
+        index
+    } else {
+        let Ok(index) = SOURCE_TEXT_COUNT
+            .try_update(Relaxed, Relaxed, |n| ((n as usize) < SOURCE_TEXTS_CAP).then(|| n + 1))
+        else {
+            return NO_SOURCE_TEXT;
+        };
+        index
     };
     let slot = &SOURCE_TEXTS[index as usize];
     slot.ptr.store(text.as_ptr().cast_mut(), Relaxed);
@@ -57,12 +72,19 @@ pub fn register_source_text(text: &'static str) -> u32 {
 }
 
 // Forgets the text of a file whose memory is about to be freed (language server regions): the table must not keep a
-// pointer into freed memory. The index is not reused.
+// pointer into freed memory. The index is reused by a later file: a session that parses a file version per request
+// (the native API) would otherwise fill the table, and every later file would store its identifiers' text. Nothing
+// reads a freed file's identifiers. Poison mode never reuses an index, so a stale read still finds the slot empty.
 pub fn unregister_source_text(index: u32) {
     if (index as usize) < SOURCE_TEXTS_CAP {
         let slot = &SOURCE_TEXTS[index as usize];
         slot.len.store(0, Relaxed);
-        slot.ptr.store(std::ptr::null_mut(), Relaxed);
+        // Only an index this call emptied goes back: unregistering twice must not hand it to two files.
+        let text = slot.ptr.swap(std::ptr::null_mut(), Relaxed);
+        if !text.is_null() && !tsrs_core::arena::poison_mode() {
+            FREE_SOURCE_TEXTS.lock().unwrap().push(index);
+            ANY_FREE_SOURCE_TEXT.store(true, Relaxed);
+        }
     }
 }
 
