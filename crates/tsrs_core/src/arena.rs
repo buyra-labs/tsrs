@@ -744,8 +744,15 @@ pub(crate) fn rewind(arena: &Arena, cp: Checkpoint) {
     if len == 0 {
         return;
     }
-    // Values discarded by the rewind are not dropped (as in a thread arena); forget their drop entries.
-    arena.drops.borrow_mut().truncate(cp.drops);
+    // Drop the values discarded by the rewind now, as freeing the region would: forgetting their entries leaked the
+    // heap memory they own (a speculative parse diagnostic's arguments) for the life of the process. Nothing points
+    // into the range (the rewind's precondition), so nothing borrows what they own either. A thread arena has none.
+    let discarded = arena.drops.borrow_mut().split_off(cp.drops);
+    for d in discarded {
+        // SAFETY: `len` values of the entry's type were allocated at `ptr` in this region since the checkpoint, are
+        // dead, and lose their entry here, so the region never drops them again.
+        unsafe { (d.drop)(d.ptr, d.len) };
+    }
     if poison_mode() {
         // SAFETY: `now .. now + len` is the range allocated since the checkpoint, in the current chunk.
         unsafe { std::ptr::write_bytes(now, POISON, len) };
@@ -1377,7 +1384,7 @@ impl Drop for RegionInner {
         let drops = std::mem::take(&mut *arena.drops.borrow_mut());
         for d in drops {
             // SAFETY: `len` values of the entry's type were allocated at `ptr` in this region and never dropped (a
-            // freed block of a type that needs drop is not reused, a rewound one has no entry).
+            // freed block of a type that needs drop is not reused, a rewound one was dropped and lost its entry).
             unsafe { (d.drop)(d.ptr, d.len) };
         }
         if poison_mode() {
@@ -1745,12 +1752,14 @@ mod tests {
             assert_ne!(d.addr(), c_addr);
             let cp = arena_checkpoint();
             let _spec = P::new(Rc::clone(&counter));
-            arena_rewind(cp);
             assert_eq!(Rc::strong_count(&counter), 4);
+            // The rewind drops the value it discards (its heap data would leak otherwise) and forgets its entry.
+            arena_rewind(cp);
+            assert_eq!(Rc::strong_count(&counter), 3);
         }
         drop(region);
-        // The rewound value lost its entry (not dropped, like a thread arena); `c` and `d` were dropped.
-        assert_eq!(Rc::strong_count(&counter), 2);
+        // `c` and `d` were dropped with the region, the rewound value only once.
+        assert_eq!(Rc::strong_count(&counter), 1);
     }
 
     #[test]
