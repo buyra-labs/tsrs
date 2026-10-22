@@ -97,6 +97,16 @@ fn schedule(st: &mut timerState, id: u64, d: Duration, f: callback) {
     let generation = st.next_generation;
     st.pending.insert(id, (generation, f));
     st.heap.push(Reverse((Instant::now() + d, id, generation)));
+    // A stopped or re-armed timer leaves its old deadline in the heap until it passes; a checker pool re-arms its
+    // cleanup timer on every release, so under steady requests the heap held the last idle timeout's worth of them
+    // (tens of thousands). Drop them once they outnumber the pending deadlines: amortized O(1) per call.
+    if st.heap.len() > 64 && st.heap.len() > 2 * st.pending.len() {
+        let timerState { heap, pending, .. } = st;
+        heap.retain(|Reverse((_, id, generation))| {
+            pending.get(id).is_some_and(|(g, _)| g == generation)
+        });
+        heap.shrink_to(2 * pending.len());
+    }
 }
 
 impl Timer {
