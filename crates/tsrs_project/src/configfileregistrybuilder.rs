@@ -191,7 +191,10 @@ impl configFileRegistryBuilder {
                 {
                     let _scope = region.enter();
                     entry.command_line = Some(P::new(
-                        entry.command_line.unwrap().reload_file_names_of_parsed_command_line(&*self.fs),
+                        entry
+                            .command_line
+                            .unwrap()
+                            .reload_file_names_of_parsed_command_line(&*self.fs),
                     ));
                 }
                 entry.regions.push(region);
