@@ -187,9 +187,14 @@ impl configFileRegistryBuilder {
         match entry.pending_reload {
             PendingReload::FileNames => {
                 logger.log(&format!("Reloading file names for config: {file_name}"));
-                entry.command_line = Some(P::new(
-                    entry.command_line.unwrap().reload_file_names_of_parsed_command_line(&*self.fs),
-                ));
+                let region = tsrs_core::arena::Region::new(64 << 10);
+                {
+                    let _scope = region.enter();
+                    entry.command_line = Some(P::new(
+                        entry.command_line.unwrap().reload_file_names_of_parsed_command_line(&*self.fs),
+                    ));
+                }
+                entry.regions.push(region);
             }
             PendingReload::Full => {
                 logger.log(&format!("Loading config file: {file_name}"));
@@ -203,15 +208,20 @@ impl configFileRegistryBuilder {
                 } else {
                     None
                 };
-                let (command_line, _) = tsoptions::get_parsed_command_line_of_config_file_path(
-                    file_name,
-                    path.clone(),
-                    existing_options.as_ref(),
-                    None, /*optionsRaw*/
-                    assume_static::<dyn ParseConfigHost>(self),
-                    Some(self as &dyn ExtendedConfigCacheTrait),
-                );
-                entry.command_line = command_line.map(P::new);
+                let region = tsrs_core::arena::Region::new(64 << 10);
+                {
+                    let _scope = region.enter();
+                    let (command_line, _) = tsoptions::get_parsed_command_line_of_config_file_path(
+                        file_name,
+                        path.clone(),
+                        existing_options.as_ref(),
+                        None, /*optionsRaw*/
+                        assume_static::<dyn ParseConfigHost>(self),
+                        Some(self as &dyn ExtendedConfigCacheTrait),
+                    );
+                    entry.command_line = command_line.map(P::new);
+                }
+                entry.regions = vec![region];
                 self.update_extending_configs(path, entry.command_line, old_command_line);
                 self.update_root_files_watch(file_name, entry);
                 logger.log("Finished loading config file");

@@ -64,6 +64,10 @@ pub(crate) struct configFileEntry {
     pub(crate) file_name: String,
     pub(crate) pending_reload: PendingReload,
     pub(crate) command_line: Option<P<ParsedCommandLine>>,
+    // The regions `command_line` and the parse behind it live in. Clones of the entry (the snapshots that share it)
+    // share them, so they are freed with the last snapshot that holds the entry. A file-names reload keeps the
+    // regions of the command line it was derived from.
+    pub(crate) regions: Vec<tsrs_core::arena::Region>,
     // retainingProjects is the set of projects that have called acquireConfig
     // without releasing it. A config file entry may be acquired by a project
     // either because it is the config for that project or because it is the
@@ -96,6 +100,7 @@ pub(crate) fn new_config_file_entry(
         file_name: file_name.to_string(),
         pending_reload: PendingReload::Full,
         command_line: None,
+        regions: Vec::new(),
         retaining_projects: None,
         retaining_open_files: None,
         retaining_configs: None,
@@ -119,6 +124,7 @@ pub(crate) fn new_extended_config_file_entry(
         file_name: file_name.to_string(),
         pending_reload: PendingReload::Full,
         command_line: None,
+        regions: Vec::new(),
         retaining_projects: None,
         retaining_open_files: None,
         retaining_configs: Some(retaining_configs),
@@ -133,6 +139,7 @@ impl Cloneable for configFileEntry {
             file_name: self.file_name.clone(),
             pending_reload: self.pending_reload,
             command_line: self.command_line,
+            regions: self.regions.clone(),
             // !!! eagerly cloning these maps makes everything more convenient,
             // but it could be avoided if needed.
             retaining_projects: self.retaining_projects.clone(),
